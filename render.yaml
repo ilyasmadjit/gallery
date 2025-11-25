@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: telegram-bot-router
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    envVars:
+      - key: BOT_TOKEN
+        value: 8228718888:AAFRG7s82mDXvMocI-dn-WBTtFX72DTbyO4
