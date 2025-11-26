@@ -20,7 +20,7 @@ EMAIL_PASSWORD = os.environ.get('rlquzmkwpbnsqjcr')  # пароль прилож
 
 # ID чатов для пересылки
 CHATS = {
-    'Мередианная': '-1003306164529',
+ 'Мередианная': '-1003306164529',
     'Краснококшайская': '-1003262447183', 
     'Шоссейная': '-1003254877531',
     'НЕРАСПОЗНАННЫЕ': '-1003285377080'
@@ -76,7 +76,7 @@ def parse_exact_format(body):
     
     return booking_data
 
-def send_to_telegram(booking_data):
+def send_to_telegram(booking_data, source="почты"):
     """Отправляет бронь в Telegram"""
     address = booking_data['address'] or 'НЕРАСПОЗНАННЫЕ'
     target_chat = CHATS.get(address, CHATS['НЕРАСПОЗНАННЫЕ'])
@@ -93,11 +93,12 @@ def send_to_telegram(booking_data):
 ⏰ <b>Оповещение:</b> {booking_data['notification_date'] or 'Не указано'}
 
 💬 <b>Тип:</b> Входящий звонок
+📡 <b>Источник:</b> {source}
     """
     
     try:
         bot.send_message(target_chat, telegram_message, parse_mode='HTML')
-        print(f"✅ Бронь переслана в {address}")
+        print(f"✅ Бронь переслана в {address} (источник: {source})")
         return True
     except Exception as e:
         print(f"❌ Ошибка отправки в Telegram: {e}")
@@ -156,24 +157,64 @@ def process_email(mail, email_id):
         
         # Парсим и отправляем в Telegram
         booking_data = parse_exact_format(body)
-        send_to_telegram(booking_data)
+        send_to_telegram(booking_data, source="почта")
         
     except Exception as e:
         print(f"❌ Ошибка обработки письма: {e}")
 
 # Запускаем проверку почты в отдельном потоке
-email_thread = threading.Thread(target=check_emails)
-email_thread.daemon = True
-email_thread.start()
+if EMAIL_USER and EMAIL_PASSWORD:
+    email_thread = threading.Thread(target=check_emails)
+    email_thread.daemon = True
+    email_thread.start()
+    print("✅ Запущена проверка почты")
+else:
+    print("⚠️ Проверка почты отключена (нет данных)")
+
+# 🔄 ОБРАБОТКА СООБЩЕНИЙ ОТ ТЕЛЕГРАМ БОТА
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Обрабатывает сообщения от Telegram бота"""
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return 'OK', 200
+    return 'Error', 403
+
+@bot.message_handler(func=lambda message: True)
+def handle_bot_message(message):
+    """Обрабатывает сообщения в личке с ботом"""
+    text = message.text or ''
+    user = f"{message.from_user.first_name} ({message.from_user.id})"
+    
+    print(f"📨 Сообщение от пользователя {user}: {text}")
+    
+    # Парсим как будто это письмо
+    booking_data = parse_exact_format(text)
+    
+    # Отправляем в Telegram группы
+    if send_to_telegram(booking_data, source="бот"):
+        bot.reply_to(message, "✅ Сообщение переслано в группу")
+    else:
+        bot.reply_to(message, "❌ Ошибка пересылки")
 
 @app.route('/')
 def home():
-    return "🚀 Email to Telegram Router (прямой IMAP) работает!", 200
+    return """
+    <h1>🚀 Email + Telegram Router</h1>
+    <p>Система работает!</p>
+    <ul>
+        <li>📧 <b>Почта:</b> Автопроверка каждые 2 минуты</li>
+        <li>🤖 <b>Бот:</b> Принимает сообщения в личку</li>
+        <li>💬 <b>Группы:</b> Мередианная, Краснококшайская, Шоссейная</li>
+    </ul>
+    """, 200
 
 @app.route('/health')
 def health_check():
     return "OK", 200
 
 if __name__ == '__main__':
-    print("🚀 Запущен прямой IMAP к Яндекс.Почте!")
+    print("🚀 Запущена система: Почта + Telegram бот")
     app.run(host='0.0.0.0', port=5000, debug=False)
