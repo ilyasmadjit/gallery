@@ -2,136 +2,133 @@ import os
 import telebot
 from flask import Flask, request
 from datetime import datetime
-import time
-import requests
+import re
 
 app = Flask(__name__)
 
-# Токен вашего НОВОГО бота (создать через @BotFather)
+# Токен вашего бота
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
-bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
-
-# Увеличиваем таймауты для бота
-bot._api_request_timeout = 30  # 30 секунд таймаут
+bot = telebot.TeleBot(BOT_TOKEN)
 
 # ID чатов для пересылки
 CHATS = {
     'Мередианная': '-1003306164529',
-    'Краснококшайская': '-1003262447183',
+    'Краснококшайская': '-1003262447183', 
     'Шоссейная': '-1003254877531',
     'НЕРАСПОЗНАННЫЕ': '-1003285377080'
 }
 
-# Ваш личный user_id (чтобы бот работал только с вами)
-YOUR_USER_ID = "ВАШ_USER_ID"  # Заменить на ваш ID из @userinfobot
-
-def send_with_retry(chat_id, text, max_retries=3):
-    """Отправляет сообщение с повторными попытками при ошибках"""
-    for attempt in range(max_retries):
-        try:
-            bot.send_message(chat_id, text)
-            return True
-        except Exception as e:
-            print(f"❌ Попытка {attempt + 1} не удалась: {e}")
-            if attempt < max_retries - 1:
-                time.sleep(2)  # Ждем 2 секунды перед повторной попыткой
-            else:
-                return False
-    return False
-
-def forward_with_retry(chat_id, from_chat_id, message_id, max_retries=3):
-    """Пересылает сообщение с повторными попытками при ошибках"""
-    for attempt in range(max_retries):
-        try:
-            bot.forward_message(chat_id, from_chat_id, message_id)
-            return True
-        except Exception as e:
-            print(f"❌ Попытка пересылки {attempt + 1} не удалась: {e}")
-            if attempt < max_retries - 1:
-                time.sleep(2)  # Ждем 2 секунды перед повторной попыткой
-            else:
-                return False
-    return False
+def parse_exact_format(body):
+    """Точный парсинг формата Мехт"""
+    booking_data = {
+        'address': None,
+        'guest_name': None,
+        'people_count': None,
+        'date_time': None,
+        'phone': None,
+        'record_url': None,
+        'notification_date': None
+    }
+    
+    # ТОЧНОЕ соответствие формату
+    
+    # Телефон (строка после "Телефон: ")
+    phone_match = re.search(r'Телефон:\s*([^\n]+)', body)
+    if phone_match:
+        booking_data['phone'] = phone_match.group(1).strip()
+    
+    # Запись диалога (URL)
+    record_match = re.search(r'Запись диалог:\s*([^\n]+)', body)
+    if record_match:
+        booking_data['record_url'] = record_match.group(1).strip()
+    
+    # Дата оповещения
+    notify_match = re.search(r'Дата оповещения\s*([^\n]+)', body)
+    if notify_match:
+        booking_data['notification_date'] = notify_match.group(1).strip()
+    
+    # Резюме диалога (блок)
+    summary_match = re.search(r'Резюме диалога:(.*?)(?=< Пред\.|$)', body, re.DOTALL)
+    if summary_match:
+        summary_text = summary_match.group(1)
+        
+        # Имя гостя (строго по формату)
+        name_match = re.search(r'Имя гостя\s*([^\n]+)', summary_text)
+        if name_match:
+            booking_data['guest_name'] = name_match.group(1).strip()
+        
+        # Адрес (строго по формату)
+        address_match = re.search(r'Адрес\s*([^\n]+)', summary_text)
+        if address_match:
+            booking_data['address'] = address_match.group(1).strip()
+        
+        # Количество человек (строго по формату)
+        people_match = re.search(r'Сколько человек\s*([^\n]+)', summary_text)
+        if people_match:
+            booking_data['people_count'] = people_match.group(1).strip()
+        
+        # Дата и время (строго по формату)
+        date_match = re.search(r'Дата и время\s*([^\n]+)', summary_text)
+        if date_match:
+            booking_data['date_time'] = date_match.group(1).strip()
+    
+    return booking_data
 
 @app.route('/')
 def home():
-    return "Bot Interceptor is running! 🚀", 200
+    return "Email to Telegram Router is running! 🚀", 200
 
-@app.route('/health')
-def health_check():
-    return "OK", 200
-
-@app.route('/check_telegram')
-def check_telegram():
-    """Проверяет доступность Telegram API"""
+@app.route('/email_webhook', methods=['POST'])
+def email_webhook():
+    """Принимаем письма от n8n"""
     try:
-        response = requests.get(f'https://api.telegram.org/bot{BOT_TOKEN}/getMe', timeout=10)
-        if response.status_code == 200:
-            return "✅ Telegram API доступен"
-        else:
-            return f"❌ Telegram API недоступен: {response.status_code}"
-    except Exception as e:
-        return f"❌ Ошибка подключения к Telegram: {e}"
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    """Обработка вебхуков от Telegram"""
-    if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-        return 'OK', 200
-    return 'Error', 403
-
-@bot.message_handler(func=lambda message: True)
-def intercept_message(message):
-    """Перехватывает все сообщения в личке с ботом"""
-    
-    # Проверяем, что сообщение от вас
-    if str(message.from_user.id) != YOUR_USER_ID:
-        print(f"Игнорируем сообщение не от владельца: {message.from_user.id}")
-        return
-    
-    text = message.text or message.caption or ''
-    print(f"📨 Перехвачено сообщение: {text}")
-    
-    # Определяем адрес по ключевым словам
-    if 'Мередианная' in text:
-        target_chat = CHATS['Мередианная']
-        address = 'Мередианная'
-    elif 'Краснококшайская' in text:
-        target_chat = CHATS['Краснококшайская']
-        address = 'Краснококшайская'
-    elif 'Шоссейная' in text:
-        target_chat = CHATS['Шоссейная']
-        address = 'Шоссейная'
-    else:
-        target_chat = CHATS['НЕРАСПОЗНАННЫЕ']
-        address = 'НЕРАСПОЗНАННЫЕ'
-    
-    # Пересылаем сообщение с повторными попытками
-    try:
-        if address == 'НЕРАСПОЗНАННЫЕ':
-            # Для нераспознанных отправляем с пометкой
-            warning_text = f"⚠️ НЕРАСПОЗНАННЫЙ АДРЕС:\n{text}"
-            success = send_with_retry(target_chat, warning_text)
-        else:
-            # Для распознанных - пересылаем оригинал
-            success = forward_with_retry(target_chat, message.chat.id, message.message_id)
+        # Данные письма от n8n
+        email_data = request.get_json()
         
-        if success:
-            print(f"✅ Переслано в {address}")
-            bot.reply_to(message, f"✅ Переслано в {address}")
+        # Извлекаем тему и текст письма
+        subject = email_data.get('subject', '')
+        body = email_data.get('body', '')
+        from_email = email_data.get('from', '')
+        
+        print(f"📧 Получено письмо: {subject}")
+        
+        # Парсим СТРОГО по формату Мехт
+        booking = parse_exact_format(body)
+        
+        # Определяем адрес ТОЛЬКО из поля "Адрес"
+        if booking['address']:
+            address = booking['address']
         else:
-            error_msg = "❌ Не удалось переслать после нескольких попыток"
-            print(error_msg)
-            bot.reply_to(message, error_msg)
+            address = 'НЕРАСПОЗНАННЫЕ'
+        
+        # Определяем целевой чат
+        target_chat = CHATS.get(address, CHATS['НЕРАСПОЗНАННЫЕ'])
+        
+        # Форматируем сообщение ТОЧНО как в примере
+        telegram_message = f"""
+🎯 <b>НОВАЯ БРОНЬ</b>
+
+📍 <b>Адрес:</b> {booking['address'] or 'Не указан'}
+👤 <b>Гость:</b> {booking['guest_name'] or 'Не указан'}
+👥 <b>Кол-во человек:</b> {booking['people_count'] or 'Не указано'}
+📅 <b>Дата и время:</b> {booking['date_time'] or 'Не указано'}
+📞 <b>Телефон:</b> {booking['phone'] or 'Не указан'}
+🔊 <b>Запись:</b> {booking['record_url'] or 'Нет'}
+⏰ <b>Оповещение:</b> {booking['notification_date'] or 'Не указано'}
+
+💬 <b>Тип:</b> Входящий звонок
+        """
+        
+        # Отправляем в Telegram
+        bot.send_message(target_chat, telegram_message, parse_mode='HTML')
+        print(f"✅ Бронь переслана в {address}")
+        
+        return {'status': 'success', 'address': address}, 200
         
     except Exception as e:
-        error_msg = f"❌ Критическая ошибка: {e}"
-        print(error_msg)
-        bot.reply_to(message, error_msg)
+        print(f"❌ Ошибка обработки письма: {e}")
+        return {'status': 'error', 'message': str(e)}, 500
 
 if __name__ == '__main__':
-    print("🚀 Bot Interceptor запущен!")
+    print("🚀 Email to Telegram Router запущен!")
     app.run(host='0.0.0.0', port=5000, debug=False)
